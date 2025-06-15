@@ -1,2 +1,2 @@
 # Weather-Forecasting
-This Weather App is built using HTML, CSS, and JavaScript with free public API used.
+This Weather App is built using HTML, CSS, and JavaScript. It fetches real-time weather data from a free public API and displays current temperature, weather conditions, and location details. The app includes loading states, input validation, and error handling to enhance the user experience. It's a responsive and interactive project that demonstrates API integration using JavaScript.
