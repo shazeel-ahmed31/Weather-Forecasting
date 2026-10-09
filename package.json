@@ -1,8 +1,12 @@
 {
-  "name": "my-v0-project",
+  "name": "open-meteo-weather-app",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "echo 'no build script'"
+    "check": "node --check script.js && node --check weather-service.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
