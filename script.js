@@ -1,20 +1,18 @@
 // Weather App JavaScript
 class WeatherApp {
   constructor() {
-    // Using Open-Meteo API (free, no API key required)
-    this.WEATHER_API = "https://api.open-meteo.com/v1/forecast"
-    this.GEOCODING_API = "https://geocoding-api.open-meteo.com/v1/search"
-
     this.initializeElements()
     this.bindEvents()
-    this.loadDefaultCity()
+    this.service = new WeatherService()
+    this.requestId = 0
+    this.abortController = null
 
     this.currentWeatherCondition = null
     this.particles = []
-    this.animationFrame = null
 
     this.createFloatingActionButton()
     this.initializeParticleSystem()
+    this.loadDefaultCity()
   }
 
   initializeElements() {
@@ -57,7 +55,18 @@ class WeatherApp {
       }
     })
     this.cityInput.addEventListener("input", (e) => this.handleInputChange(e))
-    this.retryBtn.addEventListener("click", () => this.handleSearch())
+    this.retryBtn.addEventListener("click", () => {
+      if (this.lastLocation) this.getWeatherByCoords(this.lastLocation.latitude, this.lastLocation.longitude);
+      else this.handleSearch();
+    })
+    this.locationNotice = document.getElementById('locationNotice')
+    document.getElementById('locationBtn').addEventListener('click', () => this.useLocation())
+    this.cityInput.addEventListener('keydown', event => { if(event.key==='Escape') this.hideSuggestions(); })
+    document.addEventListener('keydown', event => {
+      if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('.detail-item, .forecast-item')) {
+        event.preventDefault(); event.target.click();
+      }
+    })
 
     // Hide suggestions when clicking outside
     document.addEventListener("click", (e) => {
@@ -88,38 +97,34 @@ class WeatherApp {
 
         this.showWeatherModal(
           `Weather for ${date}`,
-          `
-        <p><strong>Condition:</strong> ${desc}</p>
-        <p><strong>Temperature:</strong> ${temps}</p>
-        <p><strong>Tip:</strong> ${this.getWeatherTip(desc)}</p>
-      `,
+          `Condition: ${desc}. Temperature: ${temps}.`,
         )
       }
     })
   }
 
-  async loadDefaultCity() {
-    // Try to get user's location or load a default city
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          this.getWeatherByCoords(position.coords.latitude, position.coords.longitude)
-        },
-        () => {
-          // Fallback to default city if geolocation fails
-          this.getWeatherByCity("London")
-        },
-      )
-    } else {
-      this.getWeatherByCity("London")
-    }
+  loadDefaultCity() { this.cityInput.value = 'London'; this.getWeatherByCity('London'); }
+
+  useLocation() {
+    const requestId = ++this.requestId;
+    this.abortController?.abort();
+    this.showLoading();
+    if (!navigator.geolocation) { this.locationNotice.textContent = 'Geolocation is unavailable. Showing London.'; this.loadDefaultCity(); return; }
+    navigator.geolocation.getCurrentPosition(position => {
+      if (requestId === this.requestId) this.getWeatherByCoords(position.coords.latitude, position.coords.longitude);
+    }, () => {
+      if (requestId === this.requestId) {
+        this.locationNotice.textContent = 'Location unavailable or permission denied. Showing London; you can search another city.';
+        this.loadDefaultCity();
+      }
+    }, {timeout:10000,maximumAge:300000});
   }
 
   handleSearch() {
     const city = this.cityInput.value.trim()
-    if (city) {
-      this.getWeatherByCity(city)
-    }
+    this.hideSuggestions()
+    this.lastLocation = null
+    this.getWeatherByCity(city)
   }
 
   handleInputChange(e) {
@@ -157,13 +162,13 @@ class WeatherApp {
     const filteredCities = cities.filter((city) => city.toLowerCase().includes(query.toLowerCase()))
 
     if (filteredCities.length > 0) {
-      this.suggestions.innerHTML = filteredCities
-        .slice(0, 5)
-        .map(
-          (city) =>
-            `<div class="suggestion-item" onclick="weatherApp.selectSuggestion('${city.split(",")[0]}')">${city}</div>`,
-        )
-        .join("")
+      this.suggestions.replaceChildren()
+      filteredCities.slice(0,5).forEach(city => {
+        const button = document.createElement('button')
+        button.type = 'button'; button.className = 'suggestion-item'; button.textContent = city
+        button.addEventListener('click', () => this.selectSuggestion(city.split(',')[0]))
+        this.suggestions.appendChild(button)
+      })
       this.suggestions.style.display = "block"
     } else {
       this.hideSuggestions()
@@ -206,81 +211,32 @@ class WeatherApp {
     this.weatherContainer.classList.add("fade-in")
   }
 
-  async getWeatherByCity(city) {
-    this.showLoading()
-
+  async requestWeather(load) {
+    const id = ++this.requestId;
+    this.abortController?.abort();
+    this.abortController = new AbortController();
+    const controller = this.abortController;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    this.showLoading();
     try {
-      // First, get coordinates for the city
-      const geocodingResponse = await fetch(
-        `${this.GEOCODING_API}?name=${encodeURIComponent(city)}&count=1&language=en&format=json`,
-      )
-
-      if (!geocodingResponse.ok) {
-        throw new Error("Failed to find city location")
-      }
-
-      const geocodingData = await geocodingResponse.json()
-
-      if (!geocodingData.results || geocodingData.results.length === 0) {
-        throw new Error(`City not found: ${city}`)
-      }
-
-      const location = geocodingData.results[0]
-
-      // Get weather data using coordinates
-      const weatherResponse = await fetch(
-        `${this.WEATHER_API}?latitude=${location.latitude}&longitude=${location.longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,relative_humidity_2m,dew_point_2m,apparent_temperature,precipitation_probability,precipitation,rain,showers,snowfall,snow_depth,weather_code,pressure_msl,surface_pressure,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,visibility,evapotranspiration,et0_fao_evapotranspiration,vapour_pressure_deficit,wind_speed_10m,wind_speed_80m,wind_speed_120m,wind_speed_180m,wind_direction_10m,wind_direction_80m,wind_direction_120m,wind_direction_180m,wind_gusts_10m,temperature_80m,temperature_120m,temperature_180m,soil_temperature_0cm,soil_temperature_6cm,soil_temperature_18cm,soil_temperature_54cm,soil_moisture_0_1cm,soil_moisture_1_3cm,soil_moisture_3_9cm,soil_moisture_9_27cm,soil_moisture_27_81cm&daily=weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,sunrise,sunset,daylight_duration,sunshine_duration,uv_index_max,uv_index_clear_sky_max,precipitation_sum,rain_sum,showers_sum,snowfall_sum,precipitation_hours,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,shortwave_radiation_sum,et0_fao_evapotranspiration&timezone=auto`,
-      )
-
-      if (!weatherResponse.ok) {
-        throw new Error("Failed to fetch weather data")
-      }
-
-      const weatherData = await weatherResponse.json()
-
-      this.displayWeather(location, weatherData)
+      const {location,weather} = await load(controller.signal);
+      if (id === this.requestId) this.displayWeather(location, weather);
     } catch (error) {
-      console.error("Weather fetch error:", error)
-      this.showError(error.message || "Failed to fetch weather data. Please try again.")
-    }
+      if (id === this.requestId) this.showError(error.name === 'AbortError' ? 'Request timed out. Please try again.' : error.message || 'Unable to load weather. Please try again.');
+    } finally { clearTimeout(timeout); }
   }
 
-  async getWeatherByCoords(lat, lon) {
-    this.showLoading()
+  getWeatherByCity(city) {
+    this.lastLocation = null;
+    return this.requestWeather(signal => this.service.city(city, signal));
+  }
 
-    try {
-      // Get location name from coordinates
-      const geocodingResponse = await fetch(
-        `${this.GEOCODING_API}?latitude=${lat}&longitude=${lon}&count=1&language=en&format=json`,
-      )
-
-      let locationName = "Your Location"
-      if (geocodingResponse.ok) {
-        const geocodingData = await geocodingResponse.json()
-        if (geocodingData.results && geocodingData.results.length > 0) {
-          locationName = geocodingData.results[0].name
-        }
-      }
-
-      // Get weather data
-      const weatherResponse = await fetch(
-        `${this.WEATHER_API}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,relative_humidity_2m,dew_point_2m,apparent_temperature,precipitation_probability,precipitation,rain,showers,snowfall,snow_depth,weather_code,pressure_msl,surface_pressure,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,visibility,evapotranspiration,et0_fao_evapotranspiration,vapour_pressure_deficit,wind_speed_10m,wind_speed_80m,wind_speed_120m,wind_speed_180m,wind_direction_10m,wind_direction_80m,wind_direction_120m,wind_direction_180m,wind_gusts_10m,temperature_80m,temperature_120m,temperature_180m,soil_temperature_0cm,soil_temperature_6cm,soil_temperature_18cm,soil_temperature_54cm,soil_moisture_0_1cm,soil_moisture_1_3cm,soil_moisture_3_9cm,soil_moisture_9_27cm,soil_moisture_27_81cm&daily=weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,sunrise,sunset,daylight_duration,sunshine_duration,uv_index_max,uv_index_clear_sky_max,precipitation_sum,rain_sum,showers_sum,snowfall_sum,precipitation_hours,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,shortwave_radiation_sum,et0_fao_evapotranspiration&timezone=auto`,
-      )
-
-      const weatherData = await weatherResponse.json()
-
-      const location = {
-        name: locationName,
-        country: "",
-        latitude: lat,
-        longitude: lon,
-      }
-
-      this.displayWeather(location, weatherData)
-    } catch (error) {
-      console.error("Weather fetch error:", error)
-      this.showError("Failed to fetch weather data for your location.")
-    }
+  getWeatherByCoords(latitude, longitude) {
+    this.lastLocation = {latitude,longitude};
+    return this.requestWeather(async signal => ({
+      location:{name:'Your location',country:'',latitude,longitude},
+      weather:await this.service.coords(latitude,longitude,signal)
+    }));
   }
 
   displayWeather(location, weatherData) {
@@ -290,12 +246,7 @@ class WeatherApp {
     // Display current weather
     this.cityName.textContent = location.name
     this.country.textContent = location.country || ""
-    this.currentDate.textContent = new Date().toLocaleDateString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    })
+    this.currentDate.textContent = `${forecastDate(current.time.slice(0,10), {weekday:'long',year:'numeric',month:'long',day:'numeric'})} · ${current.time.slice(11,16)} (${weatherData.timezone || 'location time'})`
 
     // Get weather icon and description based on weather code
     const weatherInfo = this.getWeatherInfo(current.weather_code, current.is_day)
@@ -303,19 +254,17 @@ class WeatherApp {
     this.weatherIcon.alt = weatherInfo.description
     this.weatherDescription.textContent = weatherInfo.description
 
-    this.currentTemp.textContent = `${Math.round(current.temperature_2m)}°C`
-    this.feelsLike.textContent = `${Math.round(current.apparent_temperature)}°C`
-    this.minTemp.textContent = `${Math.round(daily.temperature_2m_min[0])}°C`
-    this.maxTemp.textContent = `${Math.round(daily.temperature_2m_max[0])}°C`
+    this.currentTemp.textContent = weatherValue(current.temperature_2m, '°C')
+    this.feelsLike.textContent = weatherValue(current.apparent_temperature, '°C')
+    this.minTemp.textContent = weatherValue(daily.temperature_2m_min[0], '°C')
+    this.maxTemp.textContent = weatherValue(daily.temperature_2m_max[0], '°C')
 
-    // Convert visibility from meters to kilometers (if available)
-    const visibility = weatherData.hourly.visibility ? weatherData.hourly.visibility[0] / 1000 : 10
-    this.visibility.textContent = `${visibility.toFixed(1)} km`
-    this.humidity.textContent = `${current.relative_humidity_2m}%`
-    this.windSpeed.textContent = `${current.wind_speed_10m} km/h`
-    this.pressure.textContent = `${Math.round(current.pressure_msl)} hPa`
-    this.uvIndex.textContent = daily.uv_index_max[0] ? daily.uv_index_max[0].toFixed(1) : "N/A"
-    this.cloudiness.textContent = `${current.cloud_cover}%`
+    this.visibility.textContent = weatherValue(visibilityAtCurrentHour(weatherData), ' km', 1)
+    this.humidity.textContent = weatherValue(current.relative_humidity_2m, '%')
+    this.windSpeed.textContent = weatherValue(current.wind_speed_10m, ' km/h', 1)
+    this.pressure.textContent = weatherValue(current.pressure_msl, ' hPa')
+    this.uvIndex.textContent = weatherValue(daily.uv_index_max[0], '', 1)
+    this.cloudiness.textContent = weatherValue(current.cloud_cover, '%')
 
     // Display 5-day forecast
     this.displayForecast(daily)
@@ -365,10 +314,10 @@ class WeatherApp {
       86: { description: "Heavy snow showers", day: "❄️", night: "❄️" },
       95: { description: "Thunderstorm", day: "⛈️", night: "⛈️" },
       96: { description: "Thunderstorm with slight hail", day: "⛈️", night: "⛈️" },
-      97: { description: "Thunderstorm with heavy hail", day: "⛈️", night: "⛈️" },
+      99: { description: "Thunderstorm with heavy hail", day: "⛈️", night: "⛈️" },
     }
 
-    const weather = weatherCodes[weatherCode] || weatherCodes[0]
+    const weather = weatherCodes[weatherCode] || {description:"Unknown condition",day:"❔",night:"❔"}
     const icon = isDay ? weather.day : weather.night
 
     // Create a data URL for the emoji icon
@@ -392,22 +341,22 @@ class WeatherApp {
 
     // Skip today (index 0) and show next 5 days
     for (let i = 1; i < Math.min(6, daily.time.length); i++) {
-      const date = new Date(daily.time[i])
-      const dayName = date.toLocaleDateString("en-US", { weekday: "short" })
-      const monthDay = date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      const date = daily.time[i]
+      const dayName = forecastDate(date, { weekday: "short" })
+      const monthDay = forecastDate(date, { month: "short", day: "numeric" })
 
       const weatherInfo = this.getWeatherInfo(daily.weather_code[i], true)
 
       forecastItems.push(`
-      <div class="forecast-item">
+      <div class="forecast-item" role="button" tabindex="0">
         <div class="forecast-date">${dayName}<br><small>${monthDay}</small></div>
         <div class="forecast-icon">
           <img src="${weatherInfo.icon}" alt="${weatherInfo.description}" style="width: 50px; height: 50px;">
         </div>
         <div class="forecast-desc">${weatherInfo.description}</div>
         <div class="forecast-temps">
-          <span class="forecast-high">${Math.round(daily.temperature_2m_max[i])}°</span>
-          <span class="forecast-low">${Math.round(daily.temperature_2m_min[i])}°</span>
+          <span class="forecast-high">${weatherValue(daily.temperature_2m_max[i], '°')}</span>
+          <span class="forecast-low">${weatherValue(daily.temperature_2m_min[i], '°')}</span>
         </div>
       </div>
     `)
@@ -421,13 +370,11 @@ class WeatherApp {
     fab.className = "fab"
     fab.innerHTML = '<i class="fas fa-sync-alt"></i>'
     fab.title = "Refresh Weather"
+    fab.setAttribute("aria-label", "Refresh weather")
     fab.addEventListener("click", () => {
       this.showToast("Refreshing weather data...", "info")
-      if (this.cityInput.value.trim()) {
-        this.getWeatherByCity(this.cityInput.value.trim())
-      } else {
-        this.loadDefaultCity()
-      }
+      if (this.lastLocation) this.getWeatherByCoords(this.lastLocation.latitude, this.lastLocation.longitude)
+      else this.handleSearch()
     })
     document.body.appendChild(fab)
   }
@@ -442,6 +389,7 @@ class WeatherApp {
   createWeatherParticles(weatherCode) {
     // Clear existing particles
     this.clearParticles()
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
 
     let particleType = "cloud"
     let particleCount = 15
@@ -461,7 +409,7 @@ class WeatherApp {
     // Create particles
     for (let i = 0; i < particleCount; i++) {
       setTimeout(() => {
-        this.createParticle(particleType)
+        if (this.currentWeatherCondition === weatherCode && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) this.createParticle(particleType)
       }, i * 100)
     }
   }
@@ -508,10 +456,7 @@ class WeatherApp {
 
     const toast = document.createElement("div")
     toast.className = `toast ${type}`
-    toast.innerHTML = `
-    <i class="fas ${type === "success" ? "fa-check-circle" : type === "error" ? "fa-exclamation-circle" : "fa-info-circle"}"></i>
-    <span style="margin-left: 10px;">${message}</span>
-  `
+    toast.textContent = message
 
     document.body.appendChild(toast)
 
@@ -532,40 +477,17 @@ class WeatherApp {
   }
 
   showWeatherModal(title, content) {
-    // Create modal
-    const modal = document.createElement("div")
-    modal.className = "modal"
-    modal.innerHTML = `
-    <div class="modal-content">
-      <span class="close">&times;</span>
-      <h2 style="color: #0984e3; margin-bottom: 20px;">
-        <i class="fas fa-info-circle"></i> ${title}
-      </h2>
-      <div style="line-height: 1.6;">
-        ${content}
-      </div>
-    </div>
-  `
-
-    document.body.appendChild(modal)
-    modal.style.display = "block"
-
-    // Close modal events
-    const closeBtn = modal.querySelector(".close")
-    closeBtn.addEventListener("click", () => {
-      modal.style.display = "none"
-      setTimeout(() => {
-        if (modal.parentNode) {
-          modal.parentNode.removeChild(modal)
-        }
-      }, 300)
-    })
-
-    modal.addEventListener("click", (e) => {
-      if (e.target === modal) {
-        closeBtn.click()
-      }
-    })
+    const previous = document.activeElement;
+    const modal = document.createElement('dialog');
+    modal.className = 'weather-dialog';
+    const heading = document.createElement('h2'); heading.textContent=title;
+    const text = document.createElement('p'); text.textContent=content;
+    const close = document.createElement('button'); close.textContent='Close'; close.type='button';
+    modal.append(heading,text,close); document.body.appendChild(modal);
+    modal.setAttribute('aria-label',title);
+    close.addEventListener('click', () => modal.close());
+    modal.addEventListener('close', () => { modal.remove(); previous?.focus(); });
+    modal.showModal(); close.focus();
   }
 
   updateBackgroundTheme(weatherCode) {
@@ -616,44 +538,8 @@ class WeatherApp {
 
 // Initialize the weather app when the page loads
 let weatherApp
-document.addEventListener("DOMContentLoaded", () => {
+if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", () => {
   weatherApp = new WeatherApp()
 })
 
-// Utility functions
-function formatTime(timestamp) {
-  return new Date(timestamp * 1000).toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-  })
-}
-
-function getWindDirection(degrees) {
-  const directions = [
-    "N",
-    "NNE",
-    "NE",
-    "ENE",
-    "E",
-    "ESE",
-    "SE",
-    "SSE",
-    "S",
-    "SSW",
-    "SW",
-    "WSW",
-    "W",
-    "WNW",
-    "NW",
-    "NNW",
-  ]
-  return directions[Math.round(degrees / 22.5) % 16]
-}
-
-function getUVIndexLevel(uv) {
-  if (uv <= 2) return "Low"
-  if (uv <= 5) return "Moderate"
-  if (uv <= 7) return "High"
-  if (uv <= 10) return "Very High"
-  return "Extreme"
-}
+if (typeof module !== 'undefined') module.exports = {WeatherApp};
